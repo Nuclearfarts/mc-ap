@@ -1,9 +1,7 @@
 package io.github.nuclearfarts.mcap.processor;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Writer;
 import java.lang.annotation.Annotation;
@@ -14,13 +12,13 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
-
+import java.util.function.Consumer;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
+import javax.annotation.processing.SupportedOptions;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
@@ -42,18 +40,14 @@ import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
 
-import io.github.nuclearfarts.mcap.BlockItemAction;
-import io.github.nuclearfarts.mcap.BlockModelAction;
-import io.github.nuclearfarts.mcap.ItemModelAction;
-import io.github.nuclearfarts.mcap.LootTableAction;
 import io.github.nuclearfarts.mcap.annotation.BlockRegistryCallback;
 import io.github.nuclearfarts.mcap.annotation.FieldRef;
 import io.github.nuclearfarts.mcap.annotation.ItemRegistryCallback;
-import io.github.nuclearfarts.mcap.annotation.PostRegisterCallback;
 import io.github.nuclearfarts.mcap.annotation.RegisterBlock;
 import io.github.nuclearfarts.mcap.annotation.RegisterItem;
 import io.github.nuclearfarts.mcap.annotation.RegistryContainer;
 
+@SupportedOptions("buildDir")
 public class Processor extends AbstractProcessor {
 	private static final Set<String> ANNOTATIONS = new HashSet<>();
 	
@@ -72,9 +66,12 @@ public class Processor extends AbstractProcessor {
 	private TypeName blockItemName;
 	private TypeName identifierName;
 	private TypeName registryName;
-	private TypeName modInitializerName;
+	private TypeName itemGroupName;
+	
+	private Path projectDir;
 	
 	public void init(ProcessingEnvironment env) {
+		projectDir = Paths.get(env.getOptions().get("buildDir"));
 		msg = env.getMessager();
 		filer = env.getFiler();
 		elements = env.getElementUtils();
@@ -88,7 +85,7 @@ public class Processor extends AbstractProcessor {
 		blockItemName = TypeName.get(elements.getTypeElement("net.minecraft.item.BlockItem").asType());
 		identifierName = TypeName.get(identifierMirror);
 		registryName = TypeName.get(types.erasure(elements.getTypeElement("net.minecraft.util.registry.Registry").asType()));
-		modInitializerName = TypeName.get(elements.getTypeElement("net.fabricmc.api.ModInitializer").asType());
+		itemGroupName = TypeName.get(elements.getTypeElement("net.minecraft.item.ItemGroup").asType());
 	}
 	
 	@Override
@@ -98,9 +95,9 @@ public class Processor extends AbstractProcessor {
 			RegistryContainer rc = typeElement.getAnnotation(RegistryContainer.class);
 			ExecutableElement blockRegisterCallback = null;
 			ExecutableElement itemRegisterCallback = null;
-			ExecutableElement postRegisterCallback = null;
-			List<VariableElement> blocks = new ArrayList<>();
-			List<VariableElement> items = new ArrayList<>();
+			List<ParsedBlock> blocks = new ArrayList<>();
+			List<ParsedItem> items = new ArrayList<>();
+			ParsedRegistryContainer parsedContainer = new ParsedRegistryContainer(rc, new TemplateLoader(projectDir.resolve("templates")), TypeName.get(typeElement.asType()), getErrorConsumer(typeElement, RegistryContainer.class), this::parseFieldRef);
 			for(Element ele : typeElement.getEnclosedElements()) {
 				if(ele.getKind() == ElementKind.METHOD) {
 					if(checkForCallbackAnnotation((ExecutableElement) ele, BlockRegistryCallback.class, "block", identifierMirror, blockMirror)) {
@@ -119,28 +116,25 @@ public class Processor extends AbstractProcessor {
 							itemRegisterCallback = (ExecutableElement) ele;
 						}
 					}
-					if(checkForCallbackAnnotation((ExecutableElement) ele, PostRegisterCallback.class, "post-register")) {
-						if(postRegisterCallback != null) {
-							msg.printMessage(Diagnostic.Kind.ERROR, "Cannot have multiple post-register callbacks", ele, thisApiSucks(ele.getAnnotationMirrors(), ItemRegistryCallback.class));
-							msg.printMessage(Diagnostic.Kind.ERROR, "Cannot have multiple post-register callbacks", ele, thisApiSucks(postRegisterCallback.getAnnotationMirrors(), PostRegisterCallback.class));
-						} else {
-							postRegisterCallback = (ExecutableElement) ele;
-						}
-					}
 				} else if(ele.getKind() == ElementKind.FIELD) {
 					VariableElement varEle = (VariableElement) ele;
 					if(checkForRegisterAnnotation(varEle, RegisterBlock.class, blockMirror)) {
-						blocks.add(varEle);
+						blocks.add(new ParsedBlock(varEle, parsedContainer, getErrorConsumer(varEle, RegisterBlock.class)));
 					}
 					if(checkForRegisterAnnotation(varEle, RegisterItem.class, itemMirror)) {
-						items.add(varEle);
+						items.add(new ParsedItem(varEle, parsedContainer, getErrorConsumer(varEle, RegisterItem.class)));
 					}
 				}
 			}
-			genRegistrar(typeElement, blockRegisterCallback, itemRegisterCallback, postRegisterCallback, blocks, items, rc);
-			genResources(rc, blocks.stream().map(e -> e.getAnnotation(RegisterBlock.class)).collect(Collectors.toList()), items.stream().map(e -> e.getAnnotation(RegisterItem.class)).collect(Collectors.toList()));
+			
+			genRegistrar(typeElement, blockRegisterCallback, itemRegisterCallback, blocks, items, parsedContainer);
+			genResources(blocks, items);
 		}
 		return false;
+	}
+	
+	private Consumer<String> getErrorConsumer(Element element, Class<?> annotation) {
+		return s -> msg.printMessage(Diagnostic.Kind.ERROR, s, element, thisApiSucks(element.getAnnotationMirrors(), annotation));
 	}
 	
 	@Override
@@ -148,71 +142,55 @@ public class Processor extends AbstractProcessor {
 		return ANNOTATIONS;
 	}
 	
-	private void genRegistrar(TypeElement ownerClass, ExecutableElement blockCallback, ExecutableElement itemCallback, ExecutableElement postCallback, List<VariableElement> blocks, List<VariableElement> items, RegistryContainer rc) {
+	private void genRegistrar(TypeElement ownerClass, ExecutableElement blockCallback, ExecutableElement itemCallback, List<ParsedBlock> blocks, List<ParsedItem> items, ParsedRegistryContainer rc) {
 		TypeName ownerClassName = TypeName.get(ownerClass.asType());
 		CodeBlock.Builder regBuilder = CodeBlock.builder();
-		for(VariableElement ele : blocks) {
-			RegisterBlock regBlock = ele.getAnnotation(RegisterBlock.class);
-			BlockItemAction blockItem = regBlock.blockItem();
-			if(blockItem == BlockItemAction.INHERIT_MOD) {
-				blockItem = rc.blockItem();
-			}
-			
-			if(blockCallback != null) {
-				regBuilder.addStatement("$1T.$2L(new $3T($4S, $5S), $1T.$6L)", ownerClassName, blockCallback.getSimpleName(), identifierName, rc.value(), regBlock.value(), ele.getSimpleName());
-			} else {
-				regBuilder.addStatement("$1T.register($1T.BLOCK, new $2T($3S, $4S), $5T.$6L)", registryName, identifierName, rc.value(), regBlock.value(), ownerClassName, ele.getSimpleName());
-			}
-			
-			if(blockItem.registersItem) {
-				FieldRef itemGroup = regBlock.itemGroup();
-				if(types.isSameType(thisApiSucksMore(itemGroup), voidMirror)) {
-					itemGroup = rc.itemGroup();
-				}
-				if(!types.isSameType(thisApiSucksMore(itemGroup), voidMirror)) {
-					if(itemCallback != null) {
-						regBuilder.addStatement("$1T.$2L(new $3T($4S, $5S), new $9T($1T.$10L, new $6T.Settings().group($7T.$8L)))", ownerClassName, itemCallback.getSimpleName(), identifierName, rc.value(), regBlock.value(), itemName, TypeName.get(thisApiSucksMore(itemGroup)), itemGroup.field(), blockItemName, ele.getSimpleName());
-					} else {
-						regBuilder.addStatement("$1T.register($1T.ITEM, new $2T($3S, $4S), new $5T($9T.$10L, new $6T.Settings().group($7T.$8L)))", registryName, identifierName, rc.value(), regBlock.value(), blockItemName, itemName, TypeName.get(thisApiSucksMore(itemGroup)), itemGroup.field(), ownerClassName, ele.getSimpleName());
-					}
-				} else {
-					if(itemCallback != null) {
-						regBuilder.addStatement("$1T.$2L(new $3T($4S, $5S), $1T.$6L)", ownerClassName, itemCallback.getSimpleName(), identifierName, rc.value(), regBlock.value(), ele.getSimpleName());
-					} else {
-						regBuilder.addStatement("$1T.register($1T.BLOCK, new $2T($3S, $4S), $5T.$6L)", registryName, identifierName, rc.value(), regBlock.value(), ownerClassName, ele.getSimpleName());
-					}
-				}
-			}
+		for(ParsedBlock block : blocks) {
+			block.appendTo(regBuilder);
 		}
 		
-		for(VariableElement ele : items) {
-			RegisterItem regItem = ele.getAnnotation(RegisterItem.class);
-			if(itemCallback != null) {
-				regBuilder.addStatement("$1T.$2L(new $3T($4S, $5S), $1T.$6L)", ownerClassName, itemCallback.getSimpleName(), identifierName, rc.value(), regItem.value(), ele.getSimpleName());
-			} else {
-				regBuilder.addStatement("$1T.register($1T.ITEM, new $2T($3S, $4S), $5T.$6L)", registryName, identifierName, rc.value(), regItem.value(), ownerClassName, ele.getSimpleName());
-			}
+		for(ParsedItem item : items) {
+			item.appendTo(regBuilder);
 		}
 		
-		if(postCallback != null) {
-			regBuilder.addStatement("$1T.$2L()", ownerClassName, postCallback.getSimpleName());
+		CodeBlock.Builder itemRegBuilder = CodeBlock.builder();
+		if(itemCallback != null) {
+			itemRegBuilder.addStatement("$1T.$2L(new $3T($4S, id), item)", ownerClassName, itemCallback.getSimpleName(), identifierName, rc.getModId());
+		} else {
+			itemRegBuilder.addStatement("$1T.register($1T.ITEM, new $2T($3S, id), item)", registryName, identifierName, rc.getModId());
 		}
 		
-		Path projectPath;
-		try {
-			projectPath = Paths.get(filer.getResource(StandardLocation.CLASS_OUTPUT, "", ".vibecheck").toUri()).getParent().getParent().getParent();
-			Path datafile = projectPath.resolve(".eclipse_cursed_mcap");
-			regBuilder.addStatement("//$L", datafile.toString());
-		} catch (IOException e1) {
-			// TODO Auto-generated catch block
-			e1.printStackTrace();
+		CodeBlock.Builder blockRegBuilder = CodeBlock.builder();
+		if(blockCallback != null) {
+			blockRegBuilder.addStatement("$1T.$2L(new $3T($4S, id), block)", ownerClassName, blockCallback.getSimpleName(), identifierName, rc.getModId());
+		} else {
+			blockRegBuilder.addStatement("$1T.register($1T.BLOCK, new $2T($3S, id), block)", registryName, identifierName, rc.getModId());
 		}
 		
+		CodeBlock.Builder createBI1 = CodeBlock.builder();
+		createBI1.addStatement("return new $1T(block, new $2T.Settings())", blockItemName, itemName);
+		
+		CodeBlock.Builder createBI2 = CodeBlock.builder();
+		createBI2.addStatement("return new $1T(block, new $2T.Settings().group(group))", blockItemName, itemName);
 		
 		TypeSpec registrar = TypeSpec.classBuilder(ownerClass.getSimpleName() + "Registrar")
 				.addModifiers(Modifier.PUBLIC)
-				//.addSuperinterface(modInitializerName)
 				.addMethod(MethodSpec.methodBuilder("register").returns(TypeName.VOID).addModifiers(Modifier.PUBLIC, Modifier.STATIC).addCode(regBuilder.build()).build())
+				.addMethod(MethodSpec.methodBuilder("registerItem").returns(TypeName.VOID).addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+						.addParameter(itemName, "item")
+						.addParameter(String.class, "id")
+						.addCode(itemRegBuilder.build()).build())
+				.addMethod(MethodSpec.methodBuilder("registerBlock").returns(TypeName.VOID).addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+						.addParameter(blockName, "block")
+						.addParameter(String.class, "id")
+						.addCode(blockRegBuilder.build()).build())
+				.addMethod(MethodSpec.methodBuilder("createBlockItem").returns(itemName).addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+						.addParameter(blockName, "block")
+						.addCode(createBI1.build()).build())
+				.addMethod(MethodSpec.methodBuilder("createBlockItem").returns(itemName).addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+						.addParameter(blockName, "block")
+						.addParameter(itemGroupName, "group")
+						.addCode(createBI2.build()).build())
 				.build();
 		
 		JavaFile javaFile = JavaFile.builder(elements.getPackageOf(ownerClass).getQualifiedName().toString(), registrar)
@@ -236,73 +214,19 @@ public class Processor extends AbstractProcessor {
 		}
 	}
 	
-	private void genResources(RegistryContainer rc, List<RegisterBlock> blocks, List<RegisterItem> items) {
-		for(RegisterBlock block : blocks) {
-			BlockModelAction blockModelAction = block.model();
-			if(blockModelAction == BlockModelAction.INHERIT_MOD) {
-				blockModelAction = rc.blockModel();
-			}
-			
-			if(blockModelAction.model) {
-				resourceFromTemplate("blockmodel.json", "assets." + rc.value() + ".models.block", block.value() + ".json", rc.value(), block.value());
-			}
-			
-			if(blockModelAction.state) {
-				resourceFromTemplate("blockstate.json", "assets." + rc.value() + ".blockstates", block.value() + ".json", rc.value(), block.value());
-			}
-			
-			BlockItemAction blockItemAction = block.blockItem();
-			if(blockItemAction == BlockItemAction.INHERIT_MOD) {
-				blockItemAction = rc.blockItem();
-			}
-			
-			if(blockItemAction.generatesResource) {
-				switch(blockItemAction) {
-				case OTHER_TEXTURE:
-					resourceFromTemplate("itemmodel.json", "assets." + rc.value() + ".models.item", block.value() + ".json", rc.value(), block.value());
-					break;
-				case BASIC_MODEL:
-					resourceFromTemplate("blockitem.json", "assets." + rc.value() + ".models.item", block.value() + ".json", rc.value(), block.value());
-					break;
-				default:
-				}
-			}
-			
-			LootTableAction lootAction = block.loot();
-			if(lootAction == LootTableAction.INHERIT_MOD) {
-				lootAction = rc.loot();
-			}
-			
-			String str = rc.value() + ":" + block.value();
-			String template = lootAction == LootTableAction.DROP_SELF ? "loottable.json" : "silktable.json";
-			switch(lootAction) {
-			case DROP_OTHER:
-				str = block.lootData();
-			case DROP_SELF:
-			case DROP_SELF_SILK:
-				resourceFromTemplate(template, "data." + rc.value() + ".loot_tables.blocks", block.value() + ".json", str);
-			default:
-			}
+	private void genResources(List<ParsedBlock> blocks, List<ParsedItem> items) {
+		for(ParsedBlock b : blocks) {
+			b.genResources(this::resourceFromTemplate);
 		}
 		
-		for(RegisterItem item : items) {
-			ItemModelAction itemModelAction = item.model();
-			if(itemModelAction == ItemModelAction.INHERIT_MOD) {
-				itemModelAction = rc.itemModel();
-			}
-			
-			if(itemModelAction == ItemModelAction.BASIC_ITEM) {
-				resourceFromTemplate("itemmodel.json", "assets." + rc.value() + ".models.item", item.value() + ".json", rc.value(), item.value());
-			}
+		for(ParsedItem i : items) {
+			i.genResources(this::resourceFromTemplate);
 		}
 	}
 	
-	private void resourceFromTemplate(String template, String pkg, String fileName, Object... formatArgs) {
-		try(Writer w = filer.createResource(StandardLocation.CLASS_OUTPUT, pkg, fileName).openWriter();) {
-			try(InputStream inStream = getClass().getClassLoader().getResourceAsStream("templates/" + template)) {
-				String str = new BufferedReader(new InputStreamReader(inStream)).lines().collect(Collectors.joining("\n"));
-				w.write(String.format(str, formatArgs));
-			}
+	private void resourceFromTemplate(String pkg, String fileName, String contents) {
+		try(Writer w = filer.createResource(StandardLocation.CLASS_OUTPUT, pkg, fileName).openWriter()) {
+			w.write(contents);
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -368,6 +292,15 @@ public class Processor extends AbstractProcessor {
 			}
 		}
 		return null;
+	}
+	
+	private ParsedFieldRef parseFieldRef(FieldRef fieldRef) {
+		TypeMirror t = thisApiSucksMore(fieldRef);
+		if(types.isSameType(t, voidMirror) && !fieldRef.field().equals("#$%INHERIT")) {
+			return null;
+		} else {
+			return new ParsedFieldRef(t, fieldRef.field());
+		}
 	}
 	
 	private TypeMirror thisApiSucksMore(FieldRef fieldRef) {

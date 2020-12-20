@@ -5,11 +5,6 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import io.github.nuclearfarts.mcap.BlockItemAction;
-import io.github.nuclearfarts.mcap.BlockModelAction;
-import io.github.nuclearfarts.mcap.ItemModelAction;
-import io.github.nuclearfarts.mcap.LootTableAction;
-
 @Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.TYPE)
 public @interface RegistryContainer {
@@ -21,25 +16,44 @@ public @interface RegistryContainer {
 	/**
 	 * Block model action to be inherited.
 	 */
-	BlockModelAction blockModel() default BlockModelAction.NO_ACTION;
+	String block() default "";
+	String[] blockArgs() default {};
 	
 	/**
-	 * Item model action to be inherited.
+	 * Blockstate action to be inherited.
 	 */
-	ItemModelAction itemModel() default ItemModelAction.NO_ACTION;
+	String blockState() default "";
+	String[] blockStateArgs() default {};
 	
 	/**
-	 * Loot table action to be inherited.
+	 * Item model action to be inherited. Empty string means none.
+	 * Builtins: 
 	 */
-	LootTableAction loot() default LootTableAction.NO_ACTION;
+	String item() default "";
+	String[] itemArgs() default {};
 	
 	/**
-	 * Block item action to be inherited.
+	 * Loot table template to be inherited. Empty string means none.
 	 */
-	BlockItemAction blockItem() default BlockItemAction.NO_ACTION;
+	String loot() default "";
+	String[] lootArgs() default {};
+	/**
+	 * Whether or not to auto-generate a block item.
+	 */
+	boolean autoBlockItem() default false;
+	/**
+	 * Block item model template. Empty string means none. Only used when autoBlockItem is true.
+	 */
+	String blockItem() default "";
+	String[] blockItemArgs() default {};
 	
 	/**
 	 * Block item group.
 	 */
 	FieldRef itemGroup() default @FieldRef(clazz = Void.class, field = "");
+	
+	/**
+	 * Custom templates.
+	 */
+	Template[] templates() default {};
 }

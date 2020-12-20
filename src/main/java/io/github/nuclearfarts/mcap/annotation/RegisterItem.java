@@ -5,8 +5,6 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-import io.github.nuclearfarts.mcap.ItemModelAction;
-
 @Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.FIELD)
 public @interface RegisterItem {
@@ -16,12 +14,9 @@ public @interface RegisterItem {
 	String value();
 	
 	/**
-	 * Model generation action
+	 * Model generation template.
+	 * Builtins: basic
 	 */
-	ItemModelAction model() default ItemModelAction.INHERIT_MOD;
-	
-	/**
-	 * Data for CUSTOM model action. First argument is json file (use ., not /), later args will be passed into String.format.
-	 */
-	String[] modelData() default { };
+	String model() default "#$%INHERIT";
+	String[] modelArgs() default {};
 }

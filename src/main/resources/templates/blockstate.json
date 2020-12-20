@@ -1,5 +1,5 @@
 {
     "variants": {
-        "": { "model": "%s:block/%s" }
+        "": { "model": "${modid}:block/${id}" }
     }
 }

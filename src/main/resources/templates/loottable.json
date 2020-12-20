@@ -6,7 +6,7 @@
 			"entries": [
 				{
 					"type": "minecraft:item",
-					"name": "%s"
+					"name": "${modid}:${id}"
 				}
 			],
 			"conditions": [
