@@ -78,8 +78,8 @@ public class ParsedRegistryContainer {
 		templates.get(TemplateType.ITEM).put("block", LoadedTemplate.loadBuiltin("blockitem", modId));
 		templates.get(TemplateType.BLOCK).put("basic", LoadedTemplate.loadBuiltin("blockmodel", modId));
 		templates.get(TemplateType.BLOCKSTATE).put("basic", LoadedTemplate.loadBuiltin("blockstate", modId));
-		//templates.get(TemplateType.LOOT).put("basic", LoadedTemplate.loadBuiltin("loottable", modId));
-		//templates.get(TemplateType.LOOT).put("silk", LoadedTemplate.loadBuiltin("silktable", modId));
+		templates.get(TemplateType.LOOT).put("basic", LoadedTemplate.loadBuiltin("loottable", modId));
+		templates.get(TemplateType.LOOT).put("silk", LoadedTemplate.loadBuiltin("silktable", modId));
 	}
 	
 	public LoadedTemplate getTemplate(ProcessorTemplateType type, String name) {

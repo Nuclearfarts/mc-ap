@@ -60,7 +60,7 @@ public class ParsedBlock {
 			rc.createResource(ProcessorTemplateType.BLOCK.getPackage(container.getModId()), id + ".json", blockModelTemplate.with(id, blockModelArgs));
 		}
 		if(lootTemplate != null) {
-			rc.createResource(ProcessorTemplateType.BLOCKSTATE.getPackage(container.getModId()), id + ".json", lootTemplate.with(id, lootArgs));
+			rc.createResource(ProcessorTemplateType.LOOT.getPackage(container.getModId()), id + ".json", lootTemplate.with(id, lootArgs));
 		}
 	}
 }
