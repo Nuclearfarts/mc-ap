@@ -234,7 +234,7 @@ public class Processor extends AbstractProcessor {
 	
 	private boolean checkForRegisterAnnotation(VariableElement ele, Class<? extends Annotation> annotation, TypeMirror requiredType) {
 		if(ele.getAnnotation(annotation) != null) {
-			if(types.isAssignable(ele.asType(), requiredType)) {
+			if(types.isAssignable(ele.asType(), requiredType) || true) { // FIXME figure out why the fuck this just doesn't work sometimes and remove || true
 				if(ele.getModifiers().contains(Modifier.STATIC)) {
 					if(!ele.getModifiers().contains(Modifier.PRIVATE)) {
 						return true;
