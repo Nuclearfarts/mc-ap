@@ -47,7 +47,7 @@ import io.github.nuclearfarts.mcap.annotation.RegisterBlock;
 import io.github.nuclearfarts.mcap.annotation.RegisterItem;
 import io.github.nuclearfarts.mcap.annotation.RegistryContainer;
 
-@SupportedOptions("buildDir")
+@SupportedOptions({"buildDir", "isDev"})
 public class Processor extends AbstractProcessor {
 	private static final Set<String> ANNOTATIONS = new HashSet<>();
 	
@@ -70,8 +70,11 @@ public class Processor extends AbstractProcessor {
 	
 	private Path projectDir;
 	
+	private boolean isDev = false;
+	
 	public void init(ProcessingEnvironment env) {
 		projectDir = Paths.get(env.getOptions().get("buildDir"));
+		isDev = "true".equals(env.getOptions().get("isDev"));
 		msg = env.getMessager();
 		filer = env.getFiler();
 		elements = env.getElementUtils();
@@ -126,7 +129,6 @@ public class Processor extends AbstractProcessor {
 					}
 				}
 			}
-			
 			genRegistrar(typeElement, blockRegisterCallback, itemRegisterCallback, blocks, items, parsedContainer);
 			genResources(blocks, items);
 		}
@@ -216,15 +218,19 @@ public class Processor extends AbstractProcessor {
 	
 	private void genResources(List<ParsedBlock> blocks, List<ParsedItem> items) {
 		for(ParsedBlock b : blocks) {
-			b.genResources(this::resourceFromTemplate);
+			b.genResources(this::createResource);
 		}
 		
 		for(ParsedItem i : items) {
-			i.genResources(this::resourceFromTemplate);
+			i.genResources(this::createResource);
+		}
+		
+		if(isDev) {
+			createResource("", "fabric.mod.json", "{\"id\": \"mcap_dev_load_hack\", \"schemaVersion\": 1, \"version\": \"0.0.0\", \"name\": \"MCAP Dev Loading Hack\", \"description\": \"if you're seeing this outside dev someone did a bad\"}");
 		}
 	}
 	
-	private void resourceFromTemplate(String pkg, String fileName, String contents) {
+	private void createResource(String pkg, String fileName, String contents) {
 		try(Writer w = filer.createResource(StandardLocation.CLASS_OUTPUT, pkg, fileName).openWriter()) {
 			w.write(contents);
 		} catch (IOException e) {

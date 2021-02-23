@@ -13,7 +13,7 @@ public class LoadedTemplate {
 	}
 	
 	public static LoadedTemplate loadBuiltin(String loc, String modId) throws IOException {
-		try(BufferedReader r = new BufferedReader(new InputStreamReader(LoadedTemplate.class.getClassLoader().getResourceAsStream("templates/" + loc + ".json")))) {
+		try(BufferedReader r = new BufferedReader(new InputStreamReader(LoadedTemplate.class.getResourceAsStream("/templates/" + loc + ".json")))) {
 			String text = r.lines().collect(Collectors.joining("\n"));
 			return new LoadedTemplate(text, modId);
 		}
